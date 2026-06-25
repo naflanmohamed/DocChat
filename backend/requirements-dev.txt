@@ -1,0 +1,18 @@
+# Install production deps first:
+# pip install -r requirements.txt
+# Then dev deps:
+# pip install -r requirements-dev.txt
+
+# Testing
+pytest==8.3.4
+pytest-asyncio==0.24.0
+pytest-cov==6.0.0
+httpx==0.28.0                    # For TestClient
+
+# Code quality
+ruff==0.8.2                      # Linter + formatter (replaces flake8 + black)
+mypy==1.13.0                     # Type checking
+
+# Development utilities
+ipython==8.30.0                  # Better REPL for debugging
+rich==13.9.4                     # Pretty terminal output

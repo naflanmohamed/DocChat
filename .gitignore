@@ -1,0 +1,79 @@
+# ─────────────────────────────────────────────
+# Python / Backend
+# ─────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+venv/
+env/
+ENV/
+.venv/
+
+# Environment variables (NEVER commit these)
+.env
+.env.local
+.env.production
+.env.staging
+backend/.env
+
+# Local data stores (large, machine-specific)
+backend/uploads/
+backend/chroma_db/
+*.db
+*.sqlite
+
+# ─────────────────────────────────────────────
+# Node.js / Frontend
+# ─────────────────────────────────────────────
+node_modules/
+.next/
+out/
+.vercel/
+frontend/.env.local
+frontend/.env.production
+
+# Build artifacts
+*.tsbuildinfo
+next-env.d.ts
+
+# ─────────────────────────────────────────────
+# IDE / Editor
+# ─────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# ─────────────────────────────────────────────
+# Docker
+# ─────────────────────────────────────────────
+*.log
+
+# ─────────────────────────────────────────────
+# Testing
+# ─────────────────────────────────────────────
+.pytest_cache/
+htmlcov/
+.coverage
+coverage.xml
