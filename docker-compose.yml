@@ -1,0 +1,58 @@
+version: "3.9"
+
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      - ENVIRONMENT=development
+      - LLM_PROVIDER=${LLM_PROVIDER:-groq}
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - GEMINI_MODEL=${GEMINI_MODEL:-gemini-2.0-flash}
+      - GROQ_API_KEY=${GROQ_API_KEY}
+      - GROQ_MODEL=${GROQ_MODEL:-llama-3.3-70b-versatile}
+      - EMBEDDING_PROVIDER=local
+      - EMBEDDING_MODEL=all-MiniLM-L6-v2
+      - VECTOR_DB_PROVIDER=chroma
+      - CHROMA_PERSIST_DIR=/app/chroma_db
+      - UPLOAD_DIR=/app/uploads
+      - ALLOWED_ORIGINS=http://localhost:3000
+      - MAX_FILE_SIZE_MB=50
+      - CHUNK_SIZE=1000
+      - CHUNK_OVERLAP=200
+    volumes:
+      # Persist Chroma data between container restarts
+      - chroma_data:/app/chroma_db
+      - upload_data:/app/uploads
+    restart: unless-stopped
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import requests; requests.get('http://localhost:8000/api/health')",
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    ports:
+      - "3000:3000"
+    environment:
+      - NEXT_PUBLIC_API_URL=http://localhost:8000
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+volumes:
+  chroma_data:
+  upload_data:

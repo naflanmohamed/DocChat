@@ -1,0 +1,58 @@
+services:
+  - type: web
+    name: document-rag-chatbot-backend
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+
+    # Free tier settings
+    plan: free
+
+    # Render persistent disk — keeps Chroma data between deploys
+    disk:
+      name: chroma-storage
+      mountPath: /app/chroma_db
+      sizeGB: 1
+
+    # Health check endpoint
+    healthCheckPath: /api/health
+
+    # Environment variables — set these in Render dashboard
+    envVars:
+      - key: ENVIRONMENT
+        value: production
+      - key: DEBUG
+        value: "false"
+      - key: LLM_PROVIDER
+        value: groq
+      - key: GEMINI_MODEL
+        value: gemini-2.0-flash
+      - key: GROQ_MODEL
+        value: llama-3.3-70b-versatile
+      - key: EMBEDDING_PROVIDER
+        value: local
+      - key: EMBEDDING_MODEL
+        value: all-MiniLM-L6-v2
+      - key: VECTOR_DB_PROVIDER
+        value: chroma
+      - key: CHROMA_PERSIST_DIR
+        value: /app/chroma_db
+      - key: UPLOAD_DIR
+        value: /app/uploads
+      - key: MAX_FILE_SIZE_MB
+        value: "50"
+      - key: CHUNK_SIZE
+        value: "1000"
+      - key: CHUNK_OVERLAP
+        value: "200"
+      - key: MAX_RETRIEVAL_DOCS
+        value: "5"
+      - key: MIN_RELEVANCE_SCORE
+        value: "0.3"
+      - key: WORKERS
+        value: "1"
+      # These MUST be set manually in Render dashboard (sensitive):
+      # GEMINI_API_KEY
+      # GROQ_API_KEY
+      # ALLOWED_ORIGINS (set after Vercel deploy)
+      # SECRET_KEY

@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+venv/
+.venv/
+
+# Environment (NEVER in Docker image)
+.env
+.env.*
+
+# Local data (will be created fresh in container)
+uploads/
+chroma_db/
+test_uploads/
+test_chroma_db/
+
+# Tests (not needed in production image)
+tests/
+pytest.ini
+
+# Dev tools
+*.log
+.coverage
+htmlcov/
