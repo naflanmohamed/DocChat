@@ -189,10 +189,8 @@ class ChromaStore(VectorDBBase):
         # Sort by score descending (highest similarity first)
         search_results.sort(key=lambda x: x.score, reverse=True)
 
-        logger.info(
-            f"Search returned {len(search_results)} results "
-            f"(top score: {search_results[0].score:.3f if search_results else 'N/A'})"
-        )
+        top_score = f"{search_results[0].score:.3f}" if search_results else "N/A"
+        logger.info(f"Search returned {len(search_results)} results (top score: {top_score})")
 
         return search_results
 

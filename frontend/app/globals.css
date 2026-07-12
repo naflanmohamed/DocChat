@@ -1,3 +1,42 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+@layer base {
+  * {
+    box-sizing: border-box;
+  }
+
+  html {
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+}
+
+@layer components {
+  /* Prose styles for markdown in chat messages */
+  .prose-sm p {
+    margin-top: 0.25rem;
+    margin-bottom: 0.25rem;
+  }
+
+  .prose-sm ul,
+  .prose-sm ol {
+    padding-left: 1.25rem;
+  }
+
+  .prose-sm code {
+    background-color: rgb(243 244 246);
+    border-radius: 0.25rem;
+    padding: 0.125rem 0.25rem;
+    font-size: 0.8em;
+  }
+
+  .prose-sm pre {
+    background-color: rgb(31 41 55);
+    color: rgb(229 231 235);
+    border-radius: 0.5rem;
+    padding: 0.75rem 1rem;
+    overflow-x: auto;
+  }
+}

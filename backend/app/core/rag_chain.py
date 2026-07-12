@@ -2,24 +2,12 @@
 RAG Chain
 =========
 Orchestrates the complete Retrieval-Augmented Generation pipeline.
-
-Flow:
-1. Receive question + user_id
-2. Embed the question (same model as documents)
-3. Search vector DB for relevant chunks
-4. Build prompt with retrieved context
-5. Call LLM (Gemini or Groq)
-6. Parse response + map citations to metadata
-7. Return structured answer with citations
-
-This file is the most important in the backend.
-Understanding it means understanding RAG.
 """
 
 import logging
 import re
 from dataclasses import dataclass
-from typing import Optional, Generator
+from typing import Optional
 
 import requests
 
@@ -33,26 +21,13 @@ logger = logging.getLogger(__name__)
 class RAGResponse:
     """Complete response from the RAG pipeline."""
     answer: str
-    citations: list[SearchResult]      # Only cited sources
-    all_retrieved: list[SearchResult]  # All retrieved sources
+    citations: list[SearchResult]
+    all_retrieved: list[SearchResult]
     model_used: str
     has_relevant_sources: bool
 
 
 class RAGChain:
-    """
-    The complete RAG pipeline.
-
-    Usage:
-        chain = RAGChain(embedder=embedder, vector_store=store, settings=settings)
-        response = chain.query(
-            question="What was Q3 revenue?",
-            user_id="user1",
-            conversation_history=[...]
-        )
-        print(response.answer)
-        print(response.citations)
-    """
 
     def __init__(
         self,
@@ -60,9 +35,9 @@ class RAGChain:
         vector_store: VectorDBBase,
         llm_provider: str = "gemini",
         gemini_api_key: str = "",
-        gemini_model: str = "gemini-1.5-flash",
+        gemini_model: str = "gemini-2.0-flash",
         groq_api_key: str = "",
-        groq_model: str = "llama-3.1-70b-versatile",
+        groq_model: str = "llama-3.3-70b-versatile",
         max_retrieval_docs: int = 5,
         min_relevance_score: float = 0.3,
     ):
@@ -83,28 +58,12 @@ class RAGChain:
         conversation_history: Optional[list[dict]] = None,
         document_ids: Optional[list[str]] = None,
     ) -> RAGResponse:
-        """
-        Execute the full RAG pipeline for a question.
-
-        Steps:
-        1. Embed the question
-        2. Search vector DB
-        3. Filter by relevance score
-        4. Build prompt
-        5. Call LLM
-        6. Parse citations
-        7. Return response
-        """
         conversation_history = conversation_history or []
 
-        logger.info(f"RAG query: '{question[:80]}...' for user '{user_id}'")
+        logger.info(f"RAG query: '{question[:80]}' for user '{user_id}'")
 
-        # ── Step 1: Embed the question ───────────────────────
-        logger.debug("Embedding question...")
         query_embedding = self.embedder.embed_text(question)
 
-        # ── Step 2: Search vector DB ─────────────────────────
-        logger.debug(f"Searching vector DB (top_k={self.max_retrieval_docs})...")
         retrieved = self.vector_store.search(
             query_embedding=query_embedding,
             user_id=user_id,
@@ -112,19 +71,16 @@ class RAGChain:
             document_ids=document_ids,
         )
 
-        # ── Step 3: Filter by relevance score ────────────────
-        # Chunks with very low scores are noise — exclude them
         relevant = [r for r in retrieved if r.score >= self.min_relevance_score]
-
         has_relevant = len(relevant) > 0
 
         if not has_relevant:
+            best = f"{retrieved[0].score:.3f}" if retrieved else "N/A"
             logger.warning(
                 f"No relevant chunks found (threshold={self.min_relevance_score}). "
-                f"Best score: {retrieved[0].score:.3f if retrieved else 'N/A'}"
+                f"Best score: {best}"
             )
 
-        # ── Step 4: Build prompt ─────────────────────────────
         messages = self._build_prompt(
             question=question,
             retrieved_chunks=relevant if has_relevant else retrieved[:2],
@@ -132,11 +88,8 @@ class RAGChain:
             has_relevant=has_relevant,
         )
 
-        # ── Step 5: Call LLM ─────────────────────────────────
-        logger.debug(f"Calling LLM ({self.llm_provider})...")
         answer = self._call_llm(messages)
 
-        # ── Step 6: Parse citations ──────────────────────────
         cited_indices = self._extract_citation_indices(answer)
         source_list = relevant if has_relevant else retrieved[:2]
         cited_chunks = [
@@ -155,7 +108,10 @@ class RAGChain:
             answer=answer,
             citations=cited_chunks,
             all_retrieved=retrieved,
-            model_used=f"{self.llm_provider}/{self.gemini_model if self.llm_provider == 'gemini' else self.groq_model}",
+            model_used=(
+                f"{self.llm_provider}/"
+                f"{self.gemini_model if self.llm_provider == 'gemini' else self.groq_model}"
+            ),
             has_relevant_sources=has_relevant,
         )
 
@@ -166,17 +122,6 @@ class RAGChain:
         conversation_history: list[dict],
         has_relevant: bool,
     ) -> list[dict]:
-        """
-        Assemble the complete prompt for the LLM.
-
-        Structure:
-        1. System prompt (role + rules)
-        2. Retrieved context (numbered sources)
-        3. Conversation history (last N turns)
-        4. Current question
-        """
-
-        # ── System Prompt ─────────────────────────────────────
         system_prompt = """You are a precise document analyst. Your job is to answer questions based ONLY on the provided source documents.
 
 STRICT RULES:
@@ -189,7 +134,6 @@ STRICT RULES:
 6. If sources partially answer the question, answer what you can and explicitly note what is missing
 7. Be concise, accurate, and cite every claim"""
 
-        # ── Context Assembly ──────────────────────────────────
         if retrieved_chunks:
             context_parts = []
             for i, chunk in enumerate(retrieved_chunks, 1):
@@ -207,19 +151,11 @@ STRICT RULES:
                 "Please ask the user to upload documents first."
             )
 
-        # ── Build Messages ────────────────────────────────────
         messages = [{"role": "system", "content": system_prompt}]
 
-        # Add conversation history (for multi-turn memory)
-        # Keep last 10 turns to avoid token limits
-        recent_history = conversation_history[-10:]
-        for msg in recent_history:
-            messages.append({
-                "role": msg["role"],
-                "content": msg["content"],
-            })
+        for msg in conversation_history[-10:]:
+            messages.append({"role": msg["role"], "content": msg["content"]})
 
-        # Add current question with context
         messages.append({
             "role": "user",
             "content": f"{context_block}\n\nQUESTION: {question}",
@@ -228,33 +164,46 @@ STRICT RULES:
         return messages
 
     def _call_llm(self, messages: list[dict]) -> str:
-        """Route to the configured LLM provider."""
+        """Route to LLM provider with automatic fallback."""
         if self.llm_provider == "gemini":
-            return self._call_gemini(messages)
+            try:
+                return self._call_gemini(messages)
+            except RuntimeError as e:
+                if "429" in str(e) and self.groq_api_key:
+                    logger.warning("Gemini quota exceeded, falling back to Groq")
+                    return self._call_groq(messages)
+                raise
         elif self.llm_provider == "groq":
             return self._call_groq(messages)
         else:
             raise ValueError(f"Unknown LLM provider: {self.llm_provider}")
 
     def _call_gemini(self, messages: list[dict]) -> str:
-        """Call Google Gemini 1.5 Flash API."""
+        """Call Google Gemini API."""
         url = (
             f"https://generativelanguage.googleapis.com/v1beta/models/"
             f"{self.gemini_model}:generateContent"
             f"?key={self.gemini_api_key}"
         )
 
-        # Convert to Gemini format
         system_text = ""
-        contents = []
+        conversation_messages = []
 
         for msg in messages:
             if msg["role"] == "system":
                 system_text = msg["content"]
-            elif msg["role"] == "user":
+            else:
+                conversation_messages.append(msg)
+
+        contents = []
+        for i, msg in enumerate(conversation_messages):
+            if msg["role"] == "user":
+                text = msg["content"]
+                if i == 0 and system_text:
+                    text = f"{system_text}\n\n---\n\n{text}"
                 contents.append({
                     "role": "user",
-                    "parts": [{"text": msg["content"]}]
+                    "parts": [{"text": text}]
                 })
             elif msg["role"] == "assistant":
                 contents.append({
@@ -262,19 +211,17 @@ STRICT RULES:
                     "parts": [{"text": msg["content"]}]
                 })
 
+        if not contents:
+            contents = [{"role": "user", "parts": [{"text": "Hello"}]}]
+
         payload = {
             "contents": contents,
             "generationConfig": {
-                "temperature": 0.0,       # Deterministic for factual Q&A
+                "temperature": 0.0,
                 "maxOutputTokens": 2048,
                 "topP": 0.95,
             },
         }
-
-        if system_text:
-            payload["systemInstruction"] = {
-                "parts": [{"text": system_text}]
-            }
 
         response = requests.post(url, json=payload, timeout=60)
 
@@ -318,13 +265,7 @@ STRICT RULES:
         return data["choices"][0]["message"]["content"]
 
     def _extract_citation_indices(self, answer: str) -> list[int]:
-        """
-        Parse [Source N] citation markers from the LLM answer.
-
-        Example:
-            "Revenue was $4.2M [Source 1]. Margin fell [Source 2][Source 1]."
-            → [1, 2]  (unique, in order of appearance)
-        """
+        """Parse [Source N] citation markers from the LLM answer."""
         pattern = r"\[Source (\d+)\]"
         matches = re.findall(pattern, answer)
 
