@@ -2,94 +2,78 @@
 Chat API Endpoint
 =================
 POST /api/chat
-
-Receives a question, runs the RAG pipeline,
-returns an answer with citations.
+POST /api/chat/stream
 """
 
 import logging
-
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import StreamingResponse
 
 from app.config import Settings, get_settings
 from app.core.embeddings import get_embedder
 from app.core.rag_chain import RAGChain
+from app.core.rate_limiter import chat_limiter
 from app.models.requests import ChatRequest
 from app.models.responses import ChatResponse, Citation
 from app.vectordb.factory import get_vector_store
-from fastapi.responses import StreamingResponse
-from fastapi import APIRouter, Depends, HTTPException, Request
-from app.core.rate_limiter import chat_limiter
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-def check_rate_limit(request: Request, req: ChatRequest):
-    """FastAPI dependency that enforces rate limiting."""
-    user_id = req.user_id or "anonymous"
-    if not chat_limiter.is_allowed(user_id):
-        remaining_seconds = int(chat_limiter.get_reset_time(user_id))
-        raise HTTPException(
-            status_code=429,
-            detail=(
-                f"Rate limit exceeded. You can send 20 messages per minute. "
-                f"Try again in {remaining_seconds} seconds."
-            ),
-            headers={"Retry-After": str(remaining_seconds)},
-        )
+def get_rag_chain(settings: Settings) -> RAGChain:
+    """Build a RAGChain from current settings."""
+    embedder = get_embedder(
+        provider=settings.embedding_provider,
+        model_name=settings.embedding_model,
+        hf_api_key=settings.hf_api_key,
+    )
+    vector_store = get_vector_store(
+        provider=settings.vector_db_provider,
+        chroma_persist_dir=settings.chroma_persist_dir,
+        chroma_collection_name=settings.chroma_collection_name,
+        qdrant_url=settings.qdrant_url,
+        qdrant_api_key=settings.qdrant_api_key,
+        qdrant_collection_name=settings.qdrant_collection_name,
+        embedding_dimensions=settings.embedding_dimensions,
+    )
+    return RAGChain(
+        embedder=embedder,
+        vector_store=vector_store,
+        llm_provider=settings.llm_provider,
+        gemini_api_key=settings.gemini_api_key,
+        gemini_model=settings.gemini_model,
+        groq_api_key=settings.groq_api_key,
+        groq_model=settings.groq_model,
+        max_retrieval_docs=settings.max_retrieval_docs,
+        min_relevance_score=settings.min_relevance_score,
+    )
+
 
 @router.post("/chat", response_model=ChatResponse)
 async def chat(
     request: ChatRequest,
     settings: Settings = Depends(get_settings),
-    _: None = Depends(check_rate_limit),  # Rate limit check
 ):
-    """
-    Answer a question using the RAG pipeline.
+    """Answer a question using the RAG pipeline."""
 
-    The question is embedded, relevant document chunks retrieved,
-    and a grounded answer generated with source citations.
-    """
+    # Rate limiting — inline check, no dependency conflict
+    if not chat_limiter.is_allowed(request.user_id):
+        reset_time = int(chat_limiter.get_reset_time(request.user_id))
+        raise HTTPException(
+            status_code=429,
+            detail=f"Rate limit exceeded. Try again in {reset_time} seconds.",
+            headers={"Retry-After": str(reset_time)},
+        )
+
     logger.info(
         f"Chat request: user='{request.user_id}' "
-        f"session='{request.session_id}' "
-        f"question='{request.question[:60]}...'"
+        f"question='{request.question[:60]}'"
     )
 
     try:
-        # Initialise embedder
-        embedder = get_embedder(
-            provider=settings.embedding_provider,
-            model_name=settings.embedding_model,
-            hf_api_key=settings.hf_api_key,
-        )
+        rag_chain = get_rag_chain(settings)
 
-        # Initialise vector store
-        vector_store = get_vector_store(
-            provider=settings.vector_db_provider,
-            chroma_persist_dir=settings.chroma_persist_dir,
-            chroma_collection_name=settings.chroma_collection_name,
-            qdrant_url=settings.qdrant_url,
-            qdrant_api_key=settings.qdrant_api_key,
-            qdrant_collection_name=settings.qdrant_collection_name,
-            embedding_dimensions=settings.embedding_dimensions,
-        )
-
-        # Initialise RAG chain
-        rag_chain = RAGChain(
-            embedder=embedder,
-            vector_store=vector_store,
-            llm_provider=settings.llm_provider,
-            gemini_api_key=settings.gemini_api_key,
-            gemini_model=settings.gemini_model,
-            groq_api_key=settings.groq_api_key,
-            groq_model=settings.groq_model,
-            max_retrieval_docs=settings.max_retrieval_docs,
-            min_relevance_score=settings.min_relevance_score,
-        )
-
-        # Run RAG pipeline
         rag_response = rag_chain.query(
             question=request.question,
             user_id=request.user_id,
@@ -100,7 +84,6 @@ async def chat(
             document_ids=request.document_ids,
         )
 
-        # Convert citations to response model
         citations = [
             Citation(
                 source_id=chunk.chunk_id,
@@ -108,7 +91,11 @@ async def chat(
                 page_number=chunk.page_number,
                 chunk_index=chunk.chunk_index,
                 relevance_score=chunk.score,
-                excerpt=chunk.text[:300] + "..." if len(chunk.text) > 300 else chunk.text,
+                excerpt=(
+                    chunk.text[:300] + "..."
+                    if len(chunk.text) > 300
+                    else chunk.text
+                ),
             )
             for chunk in rag_response.citations
         ]
@@ -127,66 +114,32 @@ async def chat(
         raise HTTPException(status_code=502, detail=str(e))
     except Exception as e:
         logger.exception("Unexpected error in chat endpoint")
-        raise HTTPException(
-            status_code=500,
-            detail="An unexpected error occurred. Please try again.",
-        )
+        raise HTTPException(status_code=500, detail="An unexpected error occurred.")
 
 
 @router.post("/chat/stream")
 async def chat_stream(
     request: ChatRequest,
     settings: Settings = Depends(get_settings),
-    _: None = Depends(check_rate_limit),  # Rate limit check
 ):
-    """
-    Stream chat response token by token using Server-Sent Events.
+    """Stream chat response token by token using Server-Sent Events."""
 
-    The client receives:
-    1. data: {"type": "sources", "sources": [...]}  — retrieved chunks
-    2. data: {"type": "token", "text": "word"}       — one per token
-    3. data: {"type": "done"}                         — stream complete
+    # Rate limiting — inline check
+    if not chat_limiter.is_allowed(request.user_id):
+        reset_time = int(chat_limiter.get_reset_time(request.user_id))
+        raise HTTPException(
+            status_code=429,
+            detail=f"Rate limit exceeded. Try again in {reset_time} seconds.",
+            headers={"Retry-After": str(reset_time)},
+        )
 
-    Frontend usage:
-        const eventSource = new EventSource('/api/chat/stream');
-        eventSource.onmessage = (e) => {
-            const data = JSON.parse(e.data);
-            if (data.type === 'token') appendToken(data.text);
-        };
-    """
     logger.info(
         f"Streaming chat: user='{request.user_id}' "
         f"question='{request.question[:60]}'"
     )
 
     try:
-        embedder = get_embedder(
-            provider=settings.embedding_provider,
-            model_name=settings.embedding_model,
-            hf_api_key=settings.hf_api_key,
-        )
-
-        vector_store = get_vector_store(
-            provider=settings.vector_db_provider,
-            chroma_persist_dir=settings.chroma_persist_dir,
-            chroma_collection_name=settings.chroma_collection_name,
-            qdrant_url=settings.qdrant_url,
-            qdrant_api_key=settings.qdrant_api_key,
-            qdrant_collection_name=settings.qdrant_collection_name,
-            embedding_dimensions=settings.embedding_dimensions,
-        )
-
-        rag_chain = RAGChain(
-            embedder=embedder,
-            vector_store=vector_store,
-            llm_provider=settings.llm_provider,
-            gemini_api_key=settings.gemini_api_key,
-            gemini_model=settings.gemini_model,
-            groq_api_key=settings.groq_api_key,
-            groq_model=settings.groq_model,
-            max_retrieval_docs=settings.max_retrieval_docs,
-            min_relevance_score=settings.min_relevance_score,
-        )
+        rag_chain = get_rag_chain(settings)
 
         def generate():
             try:
@@ -210,7 +163,7 @@ async def chat_stream(
             headers={
                 "Cache-Control": "no-cache",
                 "Connection": "keep-alive",
-                "X-Accel-Buffering": "no",  # Disable Nginx buffering
+                "X-Accel-Buffering": "no",
             },
         )
 
