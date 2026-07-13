@@ -46,12 +46,23 @@ export function MessageBubble({ message }: MessageBubbleProps) {
           {isUser ? (
             <p>{message.content}</p>
           ) : (
-            <ReactMarkdown
-              remarkPlugins={[remarkGfm]}
-              className="prose prose-sm max-w-none prose-p:my-1 prose-ul:my-1 prose-li:my-0"
-            >
-              {message.content}
-            </ReactMarkdown>
+            <>
+              {message.content ? (
+                <ReactMarkdown
+                  remarkPlugins={[remarkGfm]}
+                  className="prose prose-sm max-w-none prose-p:my-1 prose-ul:my-1 prose-li:my-0"
+                >
+                  {message.content}
+                </ReactMarkdown>
+              ) : (
+                // Empty content while streaming starts
+                <span className="text-gray-400 italic">Thinking...</span>
+              )}
+              {/* Streaming cursor */}
+              {message.isStreaming && (
+                <span className="inline-block w-2 h-4 bg-brand-500 ml-0.5 animate-pulse rounded-sm" />
+              )}
+            </>
           )}
         </div>
 

@@ -32,6 +32,7 @@ from app.utils.file_utils import (
     get_unique_filepath,
 )
 from app.vectordb.factory import get_vector_store
+from app.core.rate_limiter import upload_limiter
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -52,6 +53,16 @@ def set_document_status(document_id: str, status_data: dict):
     _document_store[document_id] = status_data
 
 
+def check_upload_rate_limit(user_id: str = Form(default="default_user")):
+    if not upload_limiter.is_allowed(user_id):
+        reset_time = int(upload_limiter.get_reset_time(user_id))
+        raise HTTPException(
+            status_code=429,
+            detail=f"Upload rate limit exceeded. Try again in {reset_time} seconds.",
+            headers={"Retry-After": str(reset_time)},
+        )
+
+# Update upload endpoint signature
 @router.post("/upload", response_model=UploadResponse)
 async def upload_document(
     background_tasks: BackgroundTasks,
@@ -59,6 +70,7 @@ async def upload_document(
     user_id: str = Form(default="default_user"),
     session_id: str = Form(default=""),
     settings: Settings = Depends(get_settings),
+    _: None = Depends(check_upload_rate_limit),
 ):
     """
     Upload a document for processing.

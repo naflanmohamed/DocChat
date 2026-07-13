@@ -264,6 +264,172 @@ STRICT RULES:
         data = response.json()
         return data["choices"][0]["message"]["content"]
 
+    def stream_query(
+        self,
+        question: str,
+        user_id: str,
+        conversation_history: list[dict] | None = None,
+        document_ids: list[str] | None = None,
+    ):
+        """
+        Stream the RAG response token by token.
+        Yields strings — each string is a chunk of the answer.
+
+        Usage:
+            for chunk in chain.stream_query(...):
+                print(chunk, end="", flush=True)
+        """
+        conversation_history = conversation_history or []
+
+        logger.info(f"Streaming RAG query: '{question[:60]}' for user '{user_id}'")
+
+        # Steps 1-4 are identical to query() — embed, search, filter, build prompt
+        query_embedding = self.embedder.embed_text(question)
+
+        retrieved = self.vector_store.search(
+            query_embedding=query_embedding,
+            user_id=user_id,
+            top_k=self.max_retrieval_docs,
+            document_ids=document_ids,
+        )
+
+        relevant = [r for r in retrieved if r.score >= self.min_relevance_score]
+        has_relevant = len(relevant) > 0
+
+        messages = self._build_prompt(
+            question=question,
+            retrieved_chunks=relevant if has_relevant else retrieved[:2],
+            conversation_history=conversation_history,
+            has_relevant=has_relevant,
+        )
+
+        # Yield retrieved sources first as metadata
+        # Frontend uses this to render citation cards immediately
+        import json
+        sources = relevant if has_relevant else retrieved[:2]
+        source_data = [
+            {
+                "chunk_id": s.chunk_id,
+                "document_name": s.document_name,
+                "page_number": s.page_number,
+                "score": s.score,
+                "excerpt": s.text[:200],
+            }
+            for s in sources
+        ]
+        yield f"data: {json.dumps({'type': 'sources', 'sources': source_data})}\n\n"
+
+        # Stream the LLM response
+        if self.llm_provider == "gemini":
+            yield from self._stream_gemini(messages)
+        elif self.llm_provider == "groq":
+            yield from self._stream_groq(messages)
+
+        # Signal completion
+        yield f"data: {json.dumps({'type': 'done'})}\n\n"
+
+    def _stream_gemini(self, messages: list[dict]):
+        """Stream from Gemini using server-sent events."""
+        url = (
+            f"https://generativelanguage.googleapis.com/v1beta/models/"
+            f"{self.gemini_model}:streamGenerateContent"
+            f"?key={self.gemini_api_key}&alt=sse"
+        )
+
+        system_text = ""
+        conversation_messages = []
+        for msg in messages:
+            if msg["role"] == "system":
+                system_text = msg["content"]
+            else:
+                conversation_messages.append(msg)
+
+        contents = []
+        for i, msg in enumerate(conversation_messages):
+            if msg["role"] == "user":
+                text = msg["content"]
+                if i == 0 and system_text:
+                    text = f"{system_text}\n\n---\n\n{text}"
+                contents.append({"role": "user", "parts": [{"text": text}]})
+            elif msg["role"] == "assistant":
+                contents.append({"role": "model", "parts": [{"text": msg["content"]}]})
+
+        if not contents:
+            contents = [{"role": "user", "parts": [{"text": "Hello"}]}]
+
+        payload = {
+            "contents": contents,
+            "generationConfig": {
+                "temperature": 0.0,
+                "maxOutputTokens": 2048,
+            },
+        }
+
+        import json
+        with requests.post(url, json=payload, stream=True, timeout=60) as response:
+            if response.status_code != 200:
+                error_msg = f"Gemini streaming error: {response.status_code}"
+                yield f"data: {json.dumps({'type': 'error', 'message': error_msg})}\n\n"
+                return
+
+            for line in response.iter_lines():
+                if line:
+                    line_str = line.decode("utf-8")
+                    if line_str.startswith("data: "):
+                        try:
+                            data = json.loads(line_str[6:])
+                            text = (
+                                data.get("candidates", [{}])[0]
+                                .get("content", {})
+                                .get("parts", [{}])[0]
+                                .get("text", "")
+                            )
+                            if text:
+                                yield f"data: {json.dumps({'type': 'token', 'text': text})}\n\n"
+                        except (json.JSONDecodeError, IndexError, KeyError):
+                            continue
+
+    def _stream_groq(self, messages: list[dict]):
+        """Stream from Groq API using OpenAI-compatible streaming."""
+        import json
+
+        url = "https://api.groq.com/openai/v1/chat/completions"
+        headers = {
+            "Authorization": f"Bearer {self.groq_api_key}",
+            "Content-Type": "application/json",
+        }
+        payload = {
+            "model": self.groq_model,
+            "messages": messages,
+            "temperature": 0.0,
+            "max_tokens": 2048,
+            "stream": True,  # Enable streaming
+        }
+
+        with requests.post(
+            url, headers=headers, json=payload, stream=True, timeout=60
+        ) as response:
+            if response.status_code != 200:
+                error_msg = f"Groq streaming error: {response.status_code}"
+                yield f"data: {json.dumps({'type': 'error', 'message': error_msg})}\n\n"
+                return
+
+            for line in response.iter_lines():
+                if line:
+                    line_str = line.decode("utf-8")
+                    if line_str.startswith("data: "):
+                        data_str = line_str[6:]
+                        if data_str.strip() == "[DONE]":
+                            break
+                        try:
+                            data = json.loads(data_str)
+                            delta = data["choices"][0].get("delta", {})
+                            text = delta.get("content", "")
+                            if text:
+                                yield f"data: {json.dumps({'type': 'token', 'text': text})}\n\n"
+                        except (json.JSONDecodeError, KeyError, IndexError):
+                            continue
+
     def _extract_citation_indices(self, answer: str) -> list[int]:
         """Parse [Source N] citation markers from the LLM answer."""
         pattern = r"\[Source (\d+)\]"
